@@ -1,6 +1,6 @@
 # File Integrity & Tamper-Evidence Audit System
 
-Technical report and study draft based on the current implementation. Updated for the targeted audit fixes on 28 September 2026. The implementation was generated with AI assistance; this report does not claim independent student authorship. Final run evidence is recorded in [verification results](verification-results.md).
+Technical report and study draft based on the current implementation. Includes the targeted audit fixes verified on 28 September 2026 and the final C++ integration-test conversion. The implementation was generated with AI assistance; this report does not claim independent student authorship. Final run evidence is recorded in [verification results](verification-results.md).
 
 ## 1. Title
 
@@ -23,7 +23,7 @@ The tool detects differences; it does not determine whether a change was authori
 
 ## 4. Requirements
 
-The build requires Linux, a C++17 compiler, CMake 3.16 or newer, and OpenSSL development libraries. Python 3 runs the integration tests. Ubuntu through WSL is supported; the executable is not a native Windows application. Test fixtures use the Linux filesystem under `/tmp`.
+The build requires Linux, a C++17 compiler, CMake 3.16 or newer, and OpenSSL development libraries. Unit and integration tests are C++17 executables run by CTest. Ubuntu through WSL is supported; the executable is not a native Windows application. Test fixtures use the Linux filesystem under `/tmp`.
 
 The process needs read/traversal access to protected files and write access to a separate state directory. State and protected directories must not contain each other. Ordinary operation does not require root. Memory and storage requirements depend on file count and log size; no measured minimum hardware specification is claimed.
 
@@ -72,6 +72,8 @@ The [class diagram](class-diagram.md) shows module dependencies and shared data.
 
 The scanner uses directory and file descriptors, `openat`, `fstatat`, `fstat`, `read`, and `close`. `fdopendir` and `readdir` provide directory iteration through the C library. `O_NOFOLLOW` and descriptor-relative access reduce symlink traversal risks. File modes are inspected; the audit application does not change protected-file permissions.
 
+No custom Linux device driver is implemented. Inotify is a filesystem notification API used by this user-space application. The storage drivers shown below are existing kernel components.
+
 The monitor uses `inotify_init1`, `inotify_add_watch`, `inotify_rm_watch`, and `poll`. Each directory needs a watch; matching rename cookies associate move notifications. Event overflow is reported, followed by reconciliation. These behaviors follow the [Linux inotify API](https://man7.org/linux/man-pages/man7/inotify.7.html).
 
 `flock` serializes cooperating commands. `write`, `fsync`, and `rename` publish state. Signal handlers set a flag so the main loop can stop and log an orderly shutdown. Advisory locks do not stop a separate program that ignores the locking convention.
@@ -105,7 +107,7 @@ Reading a file requests bytes through the kernel. The bytes may already be cache
 
 ## 12. Testing
 
-CTest contains two test targets: the C++ unit executable and the Python integration suite. Unit checks cover known SHA-256 values, binary encoding, malformed encodings, and comparison categories. The 19 integration cases (9 original plus 10 regressions) exercise the real CLI in isolated temporary directories.
+CTest contains two test targets: the C++ `unit_tests` executable and the C++ `integration_tests` executable. Unit checks cover known SHA-256 values, binary encoding, malformed encodings, and comparison categories. The 19 integration cases (9 original plus 10 regressions) exercise the real CLI in isolated temporary directories.
 
 | Integration case | Verified behavior |
 | --- | --- |
@@ -115,7 +117,7 @@ CTest contains two test targets: the C++ unit executable and the Python integrat
 | Monitor duration | Stop after a requested duration. |
 | Recursive monitoring and moves | Observe nested changes, file/directory renames, permission changes, deletion, and signal shutdown. |
 | Scan and metadata | Classify content, size-related, permission, timestamp, added, and deleted differences. |
-| Symlinks, special files, binary hashing | Exclude links/FIFOs and match Python hashlib on a multi-buffer binary file. |
+| Symlinks, special files, binary hashing | Exclude links/FIFOs and match an independently calculated test-local OpenSSL EVP digest on a multi-buffer binary file. |
 | Unreadable file | Fail initialization without publishing a partial baseline. |
 | Validation and locking | Reject invalid roots/options, reused state, a busy lock, and a missing log. |
 | Rapid and ordinary renames (4 regressions) | Correct snapshot hashes, updated child paths, and continued recursive watching. |
@@ -124,9 +126,11 @@ CTest contains two test targets: the C++ unit executable and the Python integrat
 
 Builds and tests are verified in separate Linux filesystem build directories to avoid timestamp problems from Windows-mounted generated files. See [verification results](verification-results.md) for the current configurations, counts, and outcomes.
 
+The integration harness uses isolated `/tmp` fixtures, Linux child processes, captured output, explicit checks that remain active in Release builds, bounded deadlines, and RAII cleanup. Its expected hashes are calculated without calling the application hash helper. The earlier scripting-language suite was converted without dropping any of its 19 cases.
+
 ## 13. Results
 
-The demonstration covers clean-file output, modifications/additions/deletions, discovery of a nested file while monitoring, its rename, and normal shutdown. The original September 27 verification passed the unit target and all 9 original integration cases, with a valid 13-record demo chain. The expanded post-fix verification is reported separately in [verification results](verification-results.md).
+The current demonstration uses the manual Linux-terminal commands in the README. The historical scripted demonstration covered clean-file output, modifications/additions/deletions, discovery of a nested file while monitoring, its rename, and normal shutdown. The original September 27 verification passed the unit target and all 9 original integration cases, with a valid 13-record demo chain. The expanded post-fix historical verification and the subsequent final C++ conversion verification are reported separately in [verification results](verification-results.md).
 
 These results demonstrate the tested functionality. They do not establish completeness against every adversarial race, event storm, storage fault, or filesystem type. No throughput, latency guarantee, or production-scale benchmark is claimed.
 
@@ -134,7 +138,7 @@ These results demonstrate the tested functionality. They do not establish comple
 
 Every record contains the previous record's hash. Editing an internal record breaks subsequent verification unless the chain is recomputed. Deleting a complete suffix leaves a valid prefix, so internal verification alone cannot prove that the missing suffix ever existed. An externally retained exact head detects that change; legitimate later appends also change that head.
 
-An attacker who can rewrite the baseline and the entire local log can replace the local evidence. No digital signature, remote checkpoint service, or secret key is implemented. The baseline's initial contents must already be trusted.
+An attacker who can rewrite the baseline and the entire local log can replace the local evidence. No digital signature, remote checkpoint service, or secret key is implemented. The baseline's initial contents must already be trusted. Keeping the baseline unchanged during scans does not prevent external writes to protected files or state files. The chain is tamper-evident, not tamper-proof, and monitoring is best-effort.
 
 Only regular-file contents, sizes, modes, and modification times are monitored. Ownership, directory metadata, ACLs, extended attributes, symlink contents, and special files are outside scope. A scan is not an atomic tree snapshot. Notifications can be coalesced or lost; a short-lived file can disappear between snapshots. Rename pairs processed in different batches can appear as new/deleted events.
 

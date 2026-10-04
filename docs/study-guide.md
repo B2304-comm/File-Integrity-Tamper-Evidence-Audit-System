@@ -77,21 +77,23 @@ If record 3 is removed completely, records 1 and 2 remain valid. Their bytes nev
 
 ## 9. FileMonitor.cpp: events trigger content checks
 
-Open [FileMonitor.cpp](../src/FileMonitor.cpp). Find watch registration, the `poll` loop, event parsing, rename-cookie matching, snapshot comparison, and signal handling. Inotify reports filesystem notifications; it does not compute content hashes. This program uses notifications to trigger scanning and also reconciles periodically.
+Open [FileMonitor.cpp](../src/FileMonitor.cpp). Find watch registration, the `poll` loop, event parsing, rename-cookie matching, snapshot comparison, and signal handling. No custom Linux device driver is implemented; inotify is a kernel notification API called from user space. Inotify reports filesystem notifications; it does not compute content hashes. This program uses notifications to trigger scanning and also reconciles periodically.
 
 The monitor adds watches for subdirectories because inotify directory watches are not recursive. It associates `IN_MOVED_FROM` and `IN_MOVED_TO` by cookie within the processed batch. Overflow triggers a warning record and reconciliation. See the [Linux API reference](https://man7.org/linux/man-pages/man7/inotify.7.html).
 
 Trace `a -> b -> c`: completed pairs are processed in event order and the snapshot is relocated after each move. Both old hashes come from the same last-observed source contents. The unsampled intermediate destination gets `-` for its new hash. For `d -> e` followed by `e/f -> e/g`, watch paths change immediately on the directory pair so the child event uses `e`. These are snapshot-based hashes, not proofs of content at each instantaneous operation. Unpaired or uncertain paths are left to reconciliation rather than guessed.
 
+Keeping the original baseline means keeping a comparison reference, not preventing external file writes.
+
 The initial snapshot is compared against the original baseline. Later snapshots are compared against the preceding successful snapshot. That distinction prevents every notification from repeatedly logging all old unresolved deviations. Signals set a flag; ordinary code writes the stop event. Do not describe it as lossless forensic recording or a hard real-time system.
 
 ## 10. CMake, tests, and demo
 
-Open [CMakeLists.txt](../CMakeLists.txt). CMake configures a build; the compiler compiles C++ and the linker resolves object files and OpenSSL symbols. `audit_core` contains reusable modules, `audit` adds the CLI, and `unit_tests` links the core. CTest runs the C++ executable and Python integration suite as two test targets.
+Open [CMakeLists.txt](../CMakeLists.txt). CMake configures a build; the compiler compiles C++ and the linker resolves object files and OpenSSL symbols. `audit_core` contains reusable modules, `audit` adds the CLI, and `unit_tests` links the core. `integration_tests` links OpenSSL Crypto and depends on the built `audit` executable. CTest runs `unit_tests` and `integration_tests` as two test targets; the integration command receives the compiled `audit` path.
 
-Read [unit_tests.cpp](../tests/unit_tests.cpp), then [integration.py](../tests/integration.py). Unit tests check smaller functions against known expectations. Integration tests launch the actual CLI with temporary directories and verify outcomes. Nineteen Python test methods (9 original and 10 regressions) run inside the integration target; CTest still has only two targets.
+Read [unit_tests.cpp](../tests/unit_tests.cpp), then [integration_tests.cpp](../tests/integration_tests.cpp). Unit tests check smaller functions against known expectations. Integration tests launch the actual CLI with temporary directories and verify outcomes. Nineteen C++ test functions (9 original and 10 regressions) run inside the integration target; CTest still has only two targets. Follow `Fixture` for temporary files, `Child` for fork/exec and waitpid, `run` for stdout/stderr capture and timeouts, and `require` for checks that remain active in Release builds. RAII closes descriptors, reaps children, and removes temporary fixtures. The test-local `sha256` helper uses OpenSSL EVP rather than the application hash helper.
 
-Trace `test_log_tampering_and_checkpoint` and `test_recursive_monitor_and_moves` in detail. Point out an untested area, such as deterministic event-queue overflow or power loss. Read [demo.sh](../scripts/demo.sh) and explain why it explicitly accepts exit code `2` for the changed scan.
+Trace `test_log_tampering_and_checkpoint` and `test_recursive_monitor_and_moves` in detail. Point out an untested area, such as deterministic event-queue overflow or power loss. Use the manual Linux-terminal demonstration in the [README](../README.md#try-it). Explain why a changed scan returns exit code `2`; it is a successful comparison with differences. Keep the temporary path for a second terminal, start monitoring, then create a nested file, rename it, and inspect the report after stopping.
 
 ## Interview practice
 
@@ -116,7 +118,7 @@ Answer without reading, then check these key points:
 | --- | --- |
 | 0:00–0:45 | The file-change problem and the tool's detection scope. |
 | 0:45–1:30 | Architecture and module responsibilities. |
-| 1:30–3:30 | Run the demo; explain baseline, changed scan, nested monitoring, and rename. |
+| 1:30–3:30 | Run the manual terminal demo; explain baseline, changed scan, nested monitoring, and rename. |
 | 3:30–4:30 | Report fields, hash chaining, and external-checkpoint limitation. |
 | 4:30–5:30 | Linux calls, RAII, CPU/RAM/storage interaction. |
 | 5:30–6:30 | Test results and one important coverage gap. |

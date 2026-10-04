@@ -8,10 +8,10 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-CTest runs two targets:
+CTest runs two C++17 executables:
 
-- `unit`: standard SHA-256 vectors (empty input, `abc`, one million `a` bytes), binary encoding roundtrips, invalid encoding rejection, and integrity difference classification.
-- `integration`: 19 cases in isolated temporary fixtures exercise the real executable. The original 9 cases cover streaming binary hashes, unusual filenames, immutable baselines, content/metadata changes, symlink and FIFO exclusion, unreadable files, state/root validation, concurrent state locking, baseline tampering, edited/reordered/truncated logs, checkpoint checks, recursive monitoring, rename handling, permission events, monitor exclusivity, timed completion, and signal shutdown.
+- `unit`: runs `unit_tests`, which checks standard SHA-256 vectors (empty input, `abc`, one million `a` bytes), binary encoding roundtrips, invalid encoding rejection, and integrity difference classification.
+- `integration`: runs `integration_tests` with the compiled `audit` executable path. Its 19 cases in isolated temporary fixtures exercise the real executable. The original 9 cases cover streaming binary hashes, unusual filenames, baselines retained unchanged across scans, content/metadata changes, symlink and FIFO exclusion, unreadable files, state/root validation, concurrent state locking, baseline tampering, edited/reordered/truncated logs, checkpoint checks, recursive monitoring, rename handling, permission events, monitor exclusivity, timed completion, and signal shutdown.
 
 The 10 added regression cases check:
 
@@ -26,23 +26,39 @@ The 10 added regression cases check:
 9. Permission revalidation on later state-using commands without changing the log.
 10. Rejection of a foreign-owned directory before lock creation.
 
-Python's `hashlib` provides an independent digest comparison. Tests do not require root or edit user files. Run as a normal Linux user: the unreadable-file test is skipped for root, and the foreign-owner case is skipped when the user owns `/`. Monitor tests wait for recorded events with bounded deadlines. Rapid-rename tests briefly suspend only their own monitor subprocess with SIGSTOP to place related operations in the same batch. Contention tests inspect that subprocess's Linux `/proc/PID/wchan` to synchronize with blocked lock acquisition. Temporary fixtures are removed by the test harness.
+A test-local OpenSSL EVP helper calculates expected SHA-256 values independently of the application hash helper. Tests do not require root or edit user files. Run as a normal Linux user: the unreadable-file test is skipped for root, and the foreign-owner case is skipped when the user owns `/`. Monitor tests wait for recorded events with bounded deadlines. Rapid-rename tests briefly suspend only their own monitor subprocess with SIGSTOP to place related operations in the same batch. Contention tests inspect that subprocess's Linux `/proc/PID/wchan` to synchronize with blocked lock acquisition. Temporary fixtures are removed by the test harness.
 
-To run just the new regressions after building, pass these unittest method names to `tests/integration.py`, for example:
+To run the complete integration suite directly:
 
 ```bash
-python3 tests/integration.py ./build/audit \
-  AuditTests.test_rapid_file_rename_chain \
-  AuditTests.test_rapid_directory_then_child_rename \
-  AuditTests.test_single_file_rename_hashes \
-  AuditTests.test_single_directory_rename_keeps_watch \
-  AuditTests.test_monitor_waits_for_state_lock \
-  AuditTests.test_monitor_preserves_pending_append_on_signal \
-  AuditTests.test_unsafe_existing_state_permissions \
-  AuditTests.test_valid_private_existing_state \
-  AuditTests.test_state_permissions_rechecked \
-  AuditTests.test_foreign_owned_state_rejected
+./build/integration_tests ./build/audit
 ```
+
+The harness accepts the audit executable path and runs all 19 cases; it does not provide per-case selection. It reports individual PASS/FAIL/SKIP results and returns nonzero if any case fails. Checks use explicit exceptions rather than Release-disabled assertions. `fork`/`execv` launch the real CLI without shell scripts, pipes capture stdout/stderr with `poll`, and `waitpid` checks exit status. CLI calls have a 15-second deadline; event waits use 8 seconds and state-lock synchronization uses 5 seconds. RAII cleans up processes, descriptors, locks, temporary permission changes, and `mkdtemp` fixtures.
+
+| C++ test function | Coverage |
+| --- | --- |
+| `test_scan_and_metadata` | Unchanged/content/deletion/new/permission/mtime events, unusual filename escaping, report digest, and original baseline retention. |
+| `test_symlinks_special_files_and_binary_hash` | External/loop symlinks and FIFO exclusion; multi-buffer binary SHA-256. |
+| `test_log_tampering_and_checkpoint` | Edited/reordered records, incomplete final record, valid shortened prefix, checkpoint mismatch, and refusal to append to a broken chain. |
+| `test_baseline_corruption_and_binding` | Corrupt checksum and altered baseline with recomputed checksum rejected through INIT binding. |
+| `test_validation_and_locking` | Nested state, reinitialization, wrong root/options, lock contention, and missing log. |
+| `test_empty_tree` | Zero-file initialization and scan. |
+| `test_rapid_file_rename_chain` | Queued replacement rename chain, ordered MOVE records, sampled hashes, and replacement detail. |
+| `test_rapid_directory_then_child_rename` | Queued directory/child rename, updated source paths, hashes, and continued watches without false NEW/DELETED. |
+| `test_single_file_rename_hashes` | One MOVE with exact path, source detail, and old/new hashes. |
+| `test_single_directory_rename_keeps_watch` | One directory MOVE, continued descendant monitoring, and no false NEW/DELETED. |
+| `test_monitor_waits_for_state_lock` | Pending modification retained while blocked and appended exactly once after release. |
+| `test_monitor_preserves_pending_append_on_signal` | SIGTERM during blocked append preserves the event before MONITOR_STOP. |
+| `test_unsafe_existing_state_permissions` | Modes 0777/0770/0755 rejected without changing permissions or creating state files. |
+| `test_valid_private_existing_state` | Existing effective-user-owned 0700 state accepted. |
+| `test_state_permissions_rechecked` | Five later commands reject unsafe permissions without changing the log. |
+| `test_foreign_owned_state_rejected` | Foreign ownership rejected before lock creation. |
+| `test_recursive_monitor_and_moves` | Concurrent status, nested discovery, file/directory moves, continued watches, permissions, deletion, monitor exclusivity, and signal shutdown. |
+| `test_monitor_duration` | Timed completion with MONITOR_STOP. |
+| `test_unreadable_file_fails_without_partial_state` | Unreadable input rejected without baseline publication. |
+
+Baseline retention is an application policy, not write protection for files. See [verification results](verification-results.md) for previously recorded runs; this documentation update does not constitute a new test run.
 
 ## Additional manual checks
 

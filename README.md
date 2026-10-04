@@ -8,7 +8,7 @@ On Ubuntu, including Ubuntu in WSL:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y g++ cmake libssl-dev python3
+sudo apt-get install -y g++ cmake libssl-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
@@ -17,12 +17,17 @@ ctest --test-dir build --output-on-failure
 
 From PowerShell in this project directory, use `wsl -d Ubuntu -- ./build/audit help` to run the built Linux executable. A native Windows build is not supported. Under WSL, put both protected files and state in the Linux filesystem, for example under your Linux home directory, and modify protected files from Linux processes. Windows-mounted locations may not enforce the private Linux permissions required for state; use an explicit Linux `--state` path when running from this Windows project folder.
 
+## Tests
+
+CTest runs `unit_tests` and `integration_tests`. The C++17 integration executable contains 19 black-box cases, launches the real `audit` executable, and independently calculates expected SHA-256 values using a test-local OpenSSL EVP helper. Run the full integration suite directly with `./build/integration_tests ./build/audit`. No scripting-language interpreter is required for testing.
+
 ## Try it
 
 Run these commands from the project directory in a Linux/WSL terminal. The demo uses a unique temporary directory so it does not overwrite existing files.
 
 ```bash
 demo_dir=$(mktemp -d /tmp/file-audit-demo.XXXXXX)
+printf 'Demo directory: %s\n' "$demo_dir"
 mkdir "$demo_dir/protected"
 printf 'original\n' > "$demo_dir/protected/config.txt"
 
@@ -39,7 +44,7 @@ printf 'modified\n' > "$demo_dir/protected/config.txt"
 # While monitoring, edit files from a second Linux terminal.
 ```
 
-Run `bash scripts/demo.sh ./build/audit` for an automated demonstration of modification, creation, deletion, monitoring, reporting, and log verification. It prints the retained demo directory for inspection.
+The demonstration is performed manually through the Linux terminal commands above. Keep the printed temporary directory path available when using a second terminal. To demonstrate creation, deletion, and moves, create a disposable file, remove it, and rename a file or directory while monitoring.
 
 ## Commands
 
@@ -62,7 +67,7 @@ The state directory must be owned by the effective user and have mode `0700` (ow
 
 Exit codes are **0** for success or a clean scan, **1** for invalid input, operational failure, or failed verification, and **2** for a completed scan with differences. A scan may emit both a content event and a permission event for the same file.
 
-The baseline remains unchanged across scans. To intentionally establish a new baseline, initialize a new state directory and retain the old state as history. This application does not automatically accept changed files as trusted.
+The baseline remains unchanged across scans. This means the application keeps the original reference; it does not prevent protected files or state files from being modified externally. To intentionally establish a new baseline, initialize a new state directory and retain the old state as history. This application does not automatically accept changed files as trusted.
 
 ## What it records
 
@@ -74,7 +79,7 @@ Each event includes its sequence number, UTC timestamp, type, path, old/new hash
 
 Move hashes describe sampled file contents, not measurements at the exact instant of a rename. The old hash comes from the last successful snapshot, carried through earlier moves in the batch. The new hash comes from the final snapshot only if later moves do not affect that destination; otherwise it is `-`. Thus `a -> b -> c` retains the same last-observed old hash for both moves, but an unsampled intermediate destination has no invented new hash. A directory rename followed by a child rename uses the updated directory path. Overflow and incomplete pairs cannot provide a complete operation history.
 
-The monitor initially compares against the baseline, then compares each snapshot with the preceding successful snapshot. It batches notifications and attempts periodic reconciliation at approximately two-second intervals; scans and lock waits can extend that interval. `scan` always compares against the baseline, so repeated scans repeat unresolved differences. Only one monitor may use a state directory. The monitor waits for cooperating state-lock holders at startup and during appends, retaining an already prepared event batch until the lock becomes available. Other commands still return a “busy” error when their nonblocking acquisition fails. Kernel events can accumulate or overflow while the monitor waits.
+Monitoring is best-effort. The monitor initially compares against the baseline, then compares each snapshot with the preceding successful snapshot. It batches notifications and attempts periodic reconciliation at approximately two-second intervals; scans and lock waits can extend that interval. `scan` always compares against the baseline, so repeated scans repeat unresolved differences. Only one monitor may use a state directory. The monitor waits for cooperating state-lock holders at startup and during appends, retaining an already prepared event batch until the lock becomes available. Other commands still return a “busy” error when their nonblocking acquisition fails. Kernel events can accumulate or overflow while the monitor waits.
 
 On SIGINT, SIGTERM, or a duration limit, a batch already waiting to be appended is preserved and written before `MONITOR_STOP`. Lock acquisition interrupted by a signal is retried, so shutdown can wait beyond the requested duration until the other command releases its lock. The monitor does not drain all remaining kernel notifications or perform a final scan. An orderly stop therefore does not prove that every pending filesystem change was recorded. Forced termination or a real I/O error can still prevent an append or stop record.
 
@@ -86,6 +91,8 @@ Baseline files have a checksum and are bound to the initial log record. An attac
 
 Only regular files are baselined. Symlinks are not followed, and sockets, FIFOs, device nodes, directory metadata, ownership, ACLs, and extended attributes are outside scope. Permission bits, file size, modification time, and content hashes are recorded for regular files. An unreadable or concurrently changing file fails a scan instead of silently producing a partial baseline. `openat`, `O_NOFOLLOW`, and before/after metadata checks reduce traversal races; a directory tree scan is not an atomic filesystem snapshot.
 
+No custom Linux device driver is implemented. Inotify is a Linux filesystem notification API used from user space.
+
 Inotify is a notification mechanism, not a complete forensic record: changes may be coalesced, short-lived files may disappear between snapshots, and mount/network filesystem behavior can differ. Overflow is logged and triggers reconciliation; lost event history cannot be reconstructed. Scanning and hashing are linear in total file contents; baseline and log parsing use memory proportional to their size. The implementation favors clarity over high-volume performance.
 
 State consists of `baseline.dat`, `audit.log`, `lock`, and `monitor.lock`. Baselines are published using temporary files, `fsync`, and atomic rename. Log appends are synchronized to disk. A crash during initialization may leave incomplete state; use a new state directory after inspecting it. A crash during an append may leave a partial record; verification fails and the tool refuses further appends. It never silently repairs or discards evidence.
@@ -96,7 +103,6 @@ State consists of `baseline.dat`, `audit.log`, `lock`, and `monitor.lock`. Basel
 include/       Module interfaces and shared data types
 src/           C++ implementations and CLI
 tests/         SHA-256/unit tests and Linux integration tests
-scripts/       Automated demo
 config/        Configuration notes
 baseline/      Reserved placeholder; actual data goes under --state
 logs/          Reserved placeholder; actual data goes under --state
@@ -105,6 +111,6 @@ docs/          Requirements, architecture, diagrams, and testing notes
 
 See [architecture](docs/architecture.md), [requirements](docs/requirements.md), [class diagram](docs/class-diagram.md), [sequence diagrams](docs/sequence-diagram.md), [state-machine diagram](docs/state-machine-diagram.md), and [testing](docs/testing.md).
 
-For GitHub, commit source, headers, tests, scripts, CMake configuration, documentation, and the two `.gitkeep` placeholders. Build output, Python caches, `.audit/`, and runtime baseline/log/lock basenames (including under custom state paths) are ignored. Keep custom state directories outside the repository when possible; review any extra files in them before staging. The sanitized historical verification transcript in `docs/verification-build.txt` is documentation, not a runtime log.
+For GitHub, commit source, headers, tests, CMake configuration, documentation, and the two `.gitkeep` placeholders. Build output, legacy cache patterns, `.audit/`, and runtime baseline/log/lock basenames (including under custom state paths) are ignored. Keep custom state directories outside the repository when possible; review any extra files in them before staging. The sanitized historical verification transcript in `docs/verification-build.txt` is documentation, not a runtime log.
 
 For review and presentation preparation, see the [16-section capstone report](docs/capstone-report.md), [file-by-file study guide and interview practice](docs/study-guide.md), and [recorded verification results](docs/verification-results.md).
